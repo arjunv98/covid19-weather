@@ -1,114 +1,102 @@
-from utils import load_local_data, save_local_data
+from utils import *
 import pandas as pd
 import requests
 from plotly.express import choropleth_mapbox
-
-# Online file locations
-COVID_URL = "https://raw.githubusercontent.com/nytimes/covid-19-data/master/us-counties.csv"
-POP_URL = "https://www2.census.gov/programs-surveys/popest/datasets/2010-2019/counties/totals/co-est2019-alldata.csv"
-COUNTY_URL = "https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json"
-WEATHER_URL = ""
+from os import path
+from sklearn.model_selection import train_test_split
 
 
-class Dataset:
-    def __init__(self, url, fname=None, fdir=None):
-        self.url = url
-        self.fname = fname
-        self.fdir = fdir
-        self.data = self.load(url, fname, fdir)
-    
-    def load(self, url, fname, fdir=None):
-        data = None
-        # if filename exists, try loading from file
-        if fname is not None:
-            data = load_local_data(fname, fdir)
-        # if there is no data at the file location, load data from url
-        if data is None:
-            data = self.load_url_data(url)
-        return data
+class CovidDataset:
+    def __init__(self, start_date, end_date, smoothing=1, fdir='data'):
+        self.fdir = fdir # directory where training/validation/testing.csv located
 
-    def save(self, fname=None, fdir=None):
-        if fname is None:
-            fname = self.fname
-        if fdir is None:
-            fdir = self.fdir
-        save_local_data(self.data, fname, fdir)
-    
-    def load_url_data(self, url):
-        data = None
-        return data
+        # period of training, validation, and test sets
+        self.start_date = start_date # time before start_date used for pretraining
+        self.end_date = end_date
 
-    def preprocess(self):
-        pass
+        # variables to store all data in separate dataframes
+        self.data = None # holds all data (used for splitting and smoothing)
+        self.pretraining = None
+        self.training = None
+        self.validation = None
+        self.testing = None
+
+        # load data
+        self.load()
 
 
-class CovidDataset(Dataset):
-    def __init__(self, fdir=None):
-        Dataset.__init__(self, COVID_URL, "covid.csv", fdir)
+    def load(self):
+        # if files not in data, load from Kaggle and save as CSVs
+        filelist = ['pretraining.csv', 'training.csv', 'validation.csv', 'testing.csv']
+        if not all([path.exists("{}/{}".format(self.fdir, f)) for f in filelist]):
+            print("Downloading data from external source...")
+            covid_weather_data = download_from_kaggle(KAGGLE_URL, KAGGLE_COLS)
 
-    def load_url_data(self, url):
-        """Loads US county COVID-19 cases and death counts into a dataframe and saves to data/ directory.
+            # date: str -> datetime
+            covid_weather_data.date = pd.to_datetime(covid_weather_data.date)
 
-        Returns:
-            dataframe: pandas dataframe of cases and deaths by day and county.
-        """
-        data = pd.read_csv(url)
+            # get climate regions as dataframe and join to covid data
+            climate_region_data = dict_to_df(CLIMATE_REGIONS, ['region', 'state'])
+            self.data = pd.merge(covid_weather_data, climate_region_data, on='state')
 
-        # --- Basic Type Conversions and Preprocessing ---
+            self.save()
+        else:
+            print("Loading from local copy...")
+        
+        self.pretraining = pd.read_csv("{}/pretraining.csv".format(self.fdir))
+        self.training = pd.read_csv("{}/training.csv".format(self.fdir))
+        self.validation = pd.read_csv("{}/validation.csv".format(self.fdir))
+        self.testing = pd.read_csv("{}/testing.csv".format(self.fdir))
+
+        # combine all data into single dataframe (again, used for smoothing)
+        self.data = pd.concat([self.pretraining, self.training, self.validation, self.testing])
+
         # date: str -> datetime
-        data.date = pd.to_datetime(data.date)
-        # fips: float -> str (5 digits, leading 0 fill)
-        data.fips = data.fips.map(lambda x: '{0:05.0f}'.format(x))
+        self.data.date = pd.to_datetime(self.data.date)
 
-        return data
+        # get % change in cumulative cases by day and append to dataframe
+        self.data = get_cases_pct(self.data)
 
-
-class PopulationDataset(Dataset):
-    def __init__(self, fdir=None):
-        Dataset.__init__(self, POP_URL, "population.csv", fdir)
-
-    def load_url_data(self, url):
-        """Loads population data for each US county and saves to data/ directory.
-
-        Returns:
-            dataframe: pandas dataframe of estimated 2019 population by county.
-        """
-        cols = ['SUMLEV', 'REGION', 'DIVISION', 'STATE', 'COUNTY', 'STNAME', 'CTYNAME', 'POPESTIMATE2019']
-        data = pd.read_csv(url, usecols=cols, encoding='latin-1')
-
-        # --- Basic Type Conversions and Preprocessing ---
-        data = data.rename(columns=str.lower)
-        # get only county data (drop state data) and drop the SUMMARY LEVEL col
-        data = data[data.sumlev == 50].drop(columns='sumlev').reset_index()
-        # state: int -> str (2 digits, leading 0 fill)
-        data.state = data.state.map(lambda x: '{0:02d}'.format(x))
-        # county: int -> str (3 digits, leading 0 fill)
-        data.county = data.county.map(lambda x: '{0:03d}'.format(x))
-
-        # combine state and county codes into FIPS codes
-        data['fips'] = data.state + data.county
-        data = data.drop(columns=['state', 'county'])
-
-        # rename columns
-        data = data.rename(columns={"stname": "state", "ctyname": "county", "popestimate2019": "pop"})
-
-        return data
+        self.pretraining, self.training, self.validation, self.testing = self.split_data()
 
 
-class CountyMapDataset(Dataset):
-    def __init__(self, fdir=None):
-        Dataset.__init__(self, COUNTY_URL, "countymap.csv", fdir)
+    def save(self):
+        pretraining, training, validation, testing = self.split_data()
 
-    def load_url_data(self, url):
-        data = None
+        pretraining.to_csv("{}/pretraining.csv".format(self.fdir))
+        training.to_csv("{}/training.csv".format(self.fdir))
+        validation.to_csv("{}/validation.csv".format(self.fdir))
+        testing.to_csv("{}/testing.csv".format(self.fdir))
 
+        return
+
+
+    def split_data(self):
+        random_state = 42 # arbitrary random state so data always splits the same
+
+        pretraining = self.data[self.data.date < self.start_date]
+        _mainset = self.data[(self.data.date >= self.start_date) & (self.data.date <= self.end_date)]
+
+        _training, testing = train_test_split(_mainset, test_size=0.1, random_state=random_state)
+        training, validation = train_test_split(_training, test_size=0.1, random_state=random_state)
+
+        return pretraining, training, validation, testing
+
+
+class Mapper():
+    def __init__(self):
+        self.data = None
+        self.load()
+
+
+    def load(self):
         try:
-            r = requests.get(url)
+            r = requests.get(COUNTY_URL)
             data = r.json()
         except requests.exceptions.RequestException as e:
             print(e)
+        return
 
-        return data
 
     def create_map(self, data, measurement, locations='fips', label=None):
         """Creates US county choropleth map that visualizes given data.
@@ -136,13 +124,3 @@ class CountyMapDataset(Dataset):
         fig.update_layout(margin={"r":0,"t":0,"l":0,"b":0})
 
         return fig
-
-
-class WeatherDataset(Dataset):
-    def __init__(self, fdir=None):
-        Dataset.__init__(self, WEATHER_URL, "weather.csv", fdir)
-
-    def load_url_data(self, url):
-        # TODO: load weather data
-        data = None
-        return data
