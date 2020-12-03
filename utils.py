@@ -1,6 +1,9 @@
 import pandas as pd
+import numpy as np
 import kaggle
 from os import remove
+
+from sklearn.utils.validation import column_or_1d
 
 # Online file locations
 COUNTY_URL = "https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json"
@@ -17,7 +20,7 @@ CLIMATE_REGIONS = {
     'Central' : [
         'Illinois', 'Indiana', 'Kentucky', 'Missouri', 'Ohio', 'Tennessee', 'West Virginia'
     ],
-    'East North Central' : [
+    'East_North_Central' : [
         'Iowa', 'Michigan', 'Minnesota', 'Wisconsin'
     ],
     'Northeast' : [
@@ -38,7 +41,7 @@ CLIMATE_REGIONS = {
     'West' : [
         'California', 'Nevada'
     ],
-    'West North Central' : [
+    'West_North_Central' : [
         'Montana', 'Nebraska', 'North Dakota', 'South Dakota', 'Wyoming'
     ],
 }
@@ -66,20 +69,35 @@ def dict_to_df(dict, cols):
     return df
 
 
-def get_cases_pct(data):
-    # make pivot table of fips and date w/ cases as the value
-    pct_change_pivot = data.pivot(index='fips', columns='date', values='cases').T
+def get_pct_change(data, col):
+    new_col = "{}_pct".format(col)
+    # make pivot table of fips and date w/ col as the value
+    pct_change_pivot = data.pivot(index='fips', columns='date', values=col).T
     # create percent changes for each fips over time and flatten pivot table
-    pct_change_df = pd.DataFrame(pct_change_pivot.pct_change().stack()).reset_index()
-    pct_change_df.columns = ['date', 'fips', 'cases_pct']
+    pct_change_pivot = pct_change_pivot.pct_change().fillna(0)
+    pct_change_df = pd.DataFrame(pct_change_pivot.stack()).reset_index()
+    pct_change_df.columns = ['date', 'fips', new_col]
     concat_data = pd.merge(data, pct_change_df, left_on=['date', 'fips'], right_on=['date', 'fips'])
     
+    # 0 -> 1 is 100% change, 1 -> 0 is -100% change
+    concat_data.replace(np.inf, 1, inplace=True)
+    concat_data.replace(-np.inf, -1, inplace=True)
+
+
     return concat_data
 
 
-# use Rolling to get rolling average for each numerical weather column; see above flattening method
-# set window size from 1 to 7, with min_periods always 1
-# probably just get as series
-def get_rolling_avg(data, col, window):
-    # TODO
-    return
+def get_Xy(data, y_col='cases_pct', index_cols=['Unnamed: 0', 'date', 'county', 'state', 'fips', 'cases']):
+    data = data.drop(columns=index_cols)
+    X = data.drop(columns=y_col)
+    y = data[[y_col]]
+
+    return X,y
+
+
+def create_pct_features(data, cols):
+    d = data
+    for c in cols:
+        d = get_pct_change(d, c)
+    
+    return d
