@@ -8,7 +8,7 @@ from sklearn.base import BaseEstimator, TransformerMixin
 
 
 class CovidDataset:
-    def __init__(self, start_date, end_date, smoothing=1, fdir='data'):
+    def __init__(self, start_date, end_date, fdir='data'):
         self.fdir = fdir # directory where training/validation/testing.csv located
 
         # period of training, validation, and test sets
@@ -200,21 +200,3 @@ class Mapper():
         fig.update_layout(margin={"r":0,"t":0,"l":0,"b":0})
 
         return fig
-
-
-class RollingAvgTransformer(BaseEstimator, TransformerMixin):
-    def __init__(self, period = 1):
-        self.period = period
-
-    
-    def fit(self, X, y = None):
-        return self
-
-    
-    def transform(self, X, y = None):
-        if self.rolling > 1:
-            # get the rolling avg
-            cols = ['mean_temp']
-            pass
-
-        return X.values
